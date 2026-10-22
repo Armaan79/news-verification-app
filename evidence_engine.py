@@ -1,8 +1,10 @@
+
 """Evidence engine: checks whether news sources support or contradict a claim."""
 
 import csv
 import re
 from difflib import SequenceMatcher
+from pathlib import Path
 
 # ---------- rules ----------
 
@@ -13,7 +15,8 @@ says said news report reports new latest claim claims reported but can who how
 why you our his her all any may now
 """.split())
 
-with open("data/evidence_rules.csv", encoding="utf-8") as f:
+RULES_PATH = Path(__file__).resolve().parent / "data" / "evidence_rules.csv"
+with RULES_PATH.open(encoding="utf-8") as f:
     RULES = list(csv.DictReader(f))
 
 COUNTRIES = {r["value"] for r in RULES if r["type"] == "country"}
@@ -24,7 +27,6 @@ NUMBER_WORDS = {w: str(i) for i, w in enumerate(
 
 
 def rx(pattern):
-    """Compile a '|'-separated list of alternatives as whole-word regex."""
     return re.compile(r"\b(?:" + pattern + r")\b")
 
 
@@ -69,10 +71,9 @@ UNITS = rx(
 )
 QUANTITY = re.compile(
     r"(\d+(?:\.\d+)?)\s*(meters?|metres?|kilometers?|kilometres?|"
-    r"miles?|feet?|foot|kg|kilograms?|grams?|degrees?|celsius|fahrenheit|percent|%)"
+    r"miles?|feet|foot|kg|kilograms?|grams?|degrees?|celsius|fahrenheit|percent|%)"
 )
 
-# Relationships that must agree before a headline can support a claim.
 RELATION_GROUPS = [set(g.split()) for g in (
     "tall taller height high higher short shorter meters metres meter metre",
     "visible visibility see seen sight",
@@ -97,8 +98,8 @@ ACTION_CONFLICTS = [(set(a.split()), set(b.split())) for a, b in (
     ("launched launch released release", "planned plan expected upcoming"),
 )]
 
-# ---------- text helpers ----------
 
+# ---------- text helpers ----------
 
 def clean(text):
     text = str(text or "").lower().replace("’", "'").replace("‘", "'")
@@ -138,7 +139,6 @@ def numbers(text):
 
 
 def quantities(text):
-    """Numbers used as measurements, e.g. ('5', 'meter')."""
     return {(n, stem(u)) for n, u in QUANTITY.findall(clean(text))}
 
 
@@ -200,7 +200,6 @@ def scope_mismatch(claim, title):
 
 
 def relation(text):
-    """(subject, object) of an 'X orbits Y' style statement, else None."""
     text = clean(text)
     m = RELATION.search(text)
     if not m:
@@ -230,7 +229,6 @@ def relevant(claim, title):
     if not words(claim):
         return False
 
-    # Keep exact checks for specific measurements.
     cq = quantities(claim)
     if cq and not cq <= quantities(title):
         return False
@@ -272,11 +270,9 @@ def contradiction(claim, title):
 
     claim_neg, title_neg = bool(NEGATION.search(claim)), bool(NEGATION.search(title))
 
-    # A negative claim is contradicted by a direct positive statement.
     if claim_neg:
         return not title_neg
 
-    # Reversed relationship, or explicit denial (only after relevance is established).
     claim_rel, title_rel = relation(claim), relation(title)
     return bool((claim_rel and title_rel and claim_rel == title_rel[::-1])
                 or DENIAL.search(title) or denies(claim, title))
@@ -288,10 +284,10 @@ def evidence_type(claim, title):
     if (satire(title) or attribution_only(title) or future(title)
             or contextual_negation(title) or not relevant(claim, title)):
         return "neutral"
-    if measurement_match(claim, title):
-        return "direct_support"
     if contradiction(claim, title):
         return "direct_contradiction"
+    if measurement_match(claim, title):
+        return "direct_support"
 
     claim_rel, title_rel = relation(claim), relation(title)
     if claim_rel and title_rel:
@@ -314,7 +310,6 @@ def is_satirical_source(source, link=""):
 
 
 def independent_count(sources):
-    """Counts distinct stories; very similar syndicated headlines count as one."""
     groups = []
     for r in sources:
         title = clean(r.get("title", ""))
@@ -325,14 +320,12 @@ def independent_count(sources):
     return len(groups)
 
 
-# ---------- final evidence analysis ----------
-
 def analyze_evidence(results, claim="", ml_prediction=None, ml_confidence=None):
     buckets = {"supporting": [], "contradicting": [], "neutral": []}
     seen = set()
 
     for r in results or []:
-        source = r.get("source", "").strip().lower()
+        source = str(r.get("source", "")).strip().lower()
         if not source or source in seen:
             continue
         if is_satirical_source(source, r.get("link", "")):
@@ -345,7 +338,10 @@ def analyze_evidence(results, claim="", ml_prediction=None, ml_confidence=None):
     n_sup, n_con = len(sup), len(con)
 
     def credible(items):
-        return sum(r.get("source_score", 1) >= 3 for r in items)
+        return sum(
+            (int(r.get("source_score") or 1) if str(r.get("source_score") or "1").isdigit() else 1) >= 3
+            for r in items
+        )
 
     cred_sup, cred_con = credible(sup), credible(con)
     ind_sup, ind_con = independent_count(sup), independent_count(con)
@@ -354,6 +350,9 @@ def analyze_evidence(results, claim="", ml_prediction=None, ml_confidence=None):
         return {
             "verdict": verdict,
             "evidence_strength": strength,
+            "supporting_count": len(sup),
+            "contradicting_count": len(con),
+            "neutral_count": len(other),
             "supporting_sources": sup,
             "contradicting_sources": con,
             "other_sources": other,

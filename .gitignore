@@ -1,0 +1,10 @@
+node_modules/
+venv/
+env/
+__pycache__/
+dist/
+build/
+.env
+*.log
+model/
+data/*.csv
